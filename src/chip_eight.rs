@@ -1,11 +1,21 @@
 use num_derive::FromPrimitive;
+
+use std::convert::AsRef;
 use std::fs::File;
 use std::io::Read;
+use strum_macros::AsRefStr;
 
 //use rand::prelude::*;
 
-const SPRIT_START_ADDR: usize = 0x50;
+const SPRITE_START_ADDR: usize = 0x50;
+const SUB_OPCODE_MASK: u16 = 0x000F;
+const SUB_OPCODE_MASK2: u16 = 0x00FF;
+const OPCODE_MASK: u16 = 0xF000;
+const ADDR_MASK: u16 = 0x0FFF;
+const BYTE_MASK: u16 = 0x00FF;
+const NIBBLE_MASK: u16 = 0x000F;
 
+#[derive(AsRefStr, Debug)]
 enum Opcodes {
     ClearOrReturn(u16),            //sub code
     Jump(usize),                   //address
@@ -13,12 +23,12 @@ enum Opcodes {
     SkipEqual(usize, u8),          //Vx, K
     SkipNotEqual(usize, u8),       //Vx, K
     SkipEqualVy(usize, usize),     //Vx, Vy
-    LoadVxVy(usize, usize),        //Vx, Vy
+    LoadVxK(usize, u8),            //Vx, K
     AddByte(usize, u8),            //Vx, K
     Arithmetic(u16, usize, usize), //sub code, Vx, Vy
     SkipNotEqualVy(usize, usize),  //Vx, Vy,
     LoadI(usize),                  //address,
-    JumpFar(usize),                //address,
+    JumpOffset(usize),             //address,
     RandomVxByte(usize, u8),       //Vx, K,
     Draw(u16, u16, u16),           //Vx, Vy, Height
     SkipPressed(usize, u16),       //Vx, sub code
@@ -92,7 +102,7 @@ impl ChipEight {
 
         //loading hardcoded fonts into memory
         for x in 0..FONT_SIZE {
-            chip8.memory[SPRIT_START_ADDR + x] = font[x]
+            chip8.memory[SPRITE_START_ADDR + x] = font[x]
         }
 
         chip8
@@ -111,12 +121,6 @@ impl ChipEight {
     }
 
     fn fetch(&mut self) -> Opcodes {
-        const OPCODE_MASK: u16 = 0xF000;
-        const SUB_OPCODE_MASK: u16 = 0x000F;
-        const ADDR_MASK: u16 = 0x0FFF;
-        const BYTE_MASK: u16 = 0x00FF;
-        const NIBBLE_MASK: u16 = 0x000F;
-
         let opcode: Opcodes;
 
         self.opcode = (self.memory[self.pc] as u16) << 8; //op code is two bytes long
@@ -141,7 +145,8 @@ impl ChipEight {
                     Opcodes::SkipEqualVy(Self::vx_mask(self.opcode), Self::vy_mask(self.opcode))
             }
             0x6000 => {
-                opcode = Opcodes::LoadVxVy(Self::vx_mask(self.opcode), Self::vy_mask(self.opcode))
+                opcode =
+                    Opcodes::LoadVxK(Self::vx_mask(self.opcode), (self.opcode & BYTE_MASK) as u8)
             }
             0x7000 => {
                 opcode =
@@ -159,7 +164,7 @@ impl ChipEight {
                     Opcodes::SkipNotEqualVy(Self::vx_mask(self.opcode), Self::vy_mask(self.opcode))
             }
             0xA000 => opcode = Opcodes::LoadI((self.opcode & ADDR_MASK) as usize),
-            0xB000 => opcode = Opcodes::JumpFar((self.opcode & ADDR_MASK) as usize),
+            0xB000 => opcode = Opcodes::JumpOffset((self.opcode & ADDR_MASK) as usize),
             0xC000 => {
                 opcode = Opcodes::RandomVxByte(
                     Self::vx_mask(self.opcode),
@@ -185,23 +190,32 @@ impl ChipEight {
     }
 
     pub fn emulation_cycle(&mut self) {
-        const SUB_OPCODE_MASK: u16 = 0x000F;
-
         //Fetch opcode
         let opcode = self.fetch();
         self.pc += 2; //increment the pc for the next instruction
+
+        println!("Opcode: {}", opcode.as_ref());
 
         //Decode opcode
         match opcode {
             Opcodes::ClearOrReturn(sub) => {
                 match sub {
-                    0x0000 => {} //Clear isplay
-                    0x000E => {
-                        //00EE: Return from subroutine
-                        self.pc = self.stack[self.sp] as usize; //pop program counter off of the stack
-                        self.sp -= 1;
+                    //Clear Display
+                    0x0000 => {
+                        println!("----- Clear Display");
+                        for i in 0..crate::DISPLAY_SIZE {
+                            self.display[i] = 0;
+                        }
                     }
-                    _ => {}
+                    //00EE: Return from subroutine
+                    0x000E => {
+                        println!("----- Return");
+                        self.sp -= 1;
+                        self.pc = self.stack[self.sp] as usize; //pop program counter off of the stack
+                    }
+                    _ => {
+                        println!("----- other");
+                    }
                 }
             }
             Opcodes::Jump(addr) => {
@@ -227,8 +241,8 @@ impl ChipEight {
                     self.pc += 2;
                 }
             }
-            Opcodes::LoadVxVy(vx, vy) => {
-                self.v_register[vx] = self.v_register[vy];
+            Opcodes::LoadVxK(vx, k) => {
+                self.v_register[vx] = k;
             }
             Opcodes::AddByte(vx, k) => {
                 self.v_register[vx] = self.v_register[vx].wrapping_add(k);
@@ -259,7 +273,7 @@ impl ChipEight {
                         } else {
                             self.v_register[0xF] = 0;
                         }
-                        self.v_register[vx] += self.v_register[vy];
+                        self.v_register[vx] = self.v_register[vx].wrapping_add(self.v_register[vy]);
                     }
                     //Sub
                     0x0005 => {
@@ -268,7 +282,7 @@ impl ChipEight {
                         } else {
                             self.v_register[0xF] = 0;
                         }
-                        self.v_register[vx] -= self.v_register[vy];
+                        self.v_register[vx] = self.v_register[vx].wrapping_sub(self.v_register[vy]);
                     }
                     //Right Shift
                     0x0006 => {
@@ -300,30 +314,31 @@ impl ChipEight {
             Opcodes::LoadI(addr) => {
                 self.i_register = addr;
             }
-            Opcodes::JumpFar(addr) => {
+            Opcodes::JumpOffset(addr) => {
                 self.pc = addr + self.v_register[0] as usize;
             }
             Opcodes::RandomVxByte(vx, k) => {
-                self.v_register[vx] = k.wrapping_add(rand::random::<u8>()); //Ok, so if you have an overflow when doing arithmetic rust will panic
-                                                                            //.wrapping_add will let you do arithmetic and wrap the numbers around
-                                                                            //for an overflow.
+                self.v_register[vx] = rand::random::<u8>() & k;
             }
             Opcodes::Draw(vx, vy, height) => {
                 self.v_register[0xF] = 0;
+
+                let x_pos = (vx as usize % crate::DISPLAY_WIDTH) as u16;
+                let y_pos = (vy as usize % crate::DISPLAY_HEIGHT) as u16;
 
                 for y in 0..height {
                     let pixel = self.memory[(self.i_register + y as usize) as usize]; //get the pixel value from the sprite stored in memory
 
                     for x in 0..8 {
                         if (pixel & (0x80 >> x)) != 0 {
-                            let current_position = ((vx + x) + ((vy + y) * 64)) as usize; //Treats display as though it were a 2d array
+                            let current_position = ((x_pos + x)
+                                + ((y_pos + y) * crate::DISPLAY_WIDTH as u16))
+                                as usize; //Treats display as though it were a 2d array
 
-                            if current_position < crate::DISPLAY_SIZE {
-                                if self.display[current_position] == 1 {
-                                    self.v_register[0xF] = 1;
-                                }
-                                self.display[current_position as usize] ^= 1;
+                            if self.display[current_position] == 1 {
+                                self.v_register[0xF] = 1;
                             }
+                            self.display[current_position as usize] ^= 1;
                         }
                     }
                 }
@@ -346,7 +361,9 @@ impl ChipEight {
                 }
             },
             Opcodes::Misc(vx) => {
-                match self.opcode & SUB_OPCODE_MASK {
+                let subcode = self.opcode & SUB_OPCODE_MASK2;
+
+                match subcode {
                     //load delay timer
                     0x0007 => {
                         self.v_register[vx] = self.delay_timer;
@@ -401,7 +418,8 @@ impl ChipEight {
                     }
                     0x0029 => {
                         //Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
-                        self.i_register = SPRIT_START_ADDR + (5 * self.v_register[vx]) as usize;
+                        //Each sprite is 5 bytes tall
+                        self.i_register = SPRITE_START_ADDR + (5 * self.v_register[vx]) as usize;
                     }
                     0x0033 => {
                         //FX33: Stores the binary-coded decimal representation of VX,
@@ -420,7 +438,9 @@ impl ChipEight {
                             self.v_register[x] = self.memory[self.i_register + x];
                         }
                     }
-                    _ => (), //Call machine code routine
+                    _ => {
+                        println!("Fxxx Opcode bad subcode: {}", subcode)
+                    } //Call machine code routine
                 }
             }
             Opcodes::BadOpcode => println!("Invalid opcode {}", self.opcode),

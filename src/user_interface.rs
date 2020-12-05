@@ -32,11 +32,12 @@ impl UserInterface {
     }
 
     pub fn render(&mut self, chip8: &ChipEight, scale: u32) {
+        self.canvas.set_draw_color(Color::RGB(255, 0, 0));
         self.canvas.clear();
         for i in 0..crate::DISPLAY_SIZE {
             let pixel = chip8.display[i];
-            let x = (i % crate::DISPLAY_WIDTH * scale as usize) as u8; //get x position of pixel
-            let y = (i / crate::DISPLAY_WIDTH * scale as usize) as u8; //get y position of pixel
+            let x = i % crate::DISPLAY_WIDTH * scale as usize; //get x position of pixel
+            let y = i / crate::DISPLAY_WIDTH * scale as usize; //get y position of pixel
 
             self.canvas.set_draw_color(Color::RGB(0, 0, 0));
             if pixel == 1 {
