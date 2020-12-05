@@ -1,11 +1,10 @@
 use num_derive::FromPrimitive;
+use std::fs::File;
+use std::io::Read;
 
 //use rand::prelude::*;
 
 const SPRIT_START_ADDR: usize = 0x50;
-const DISPLAY_WIDTH: usize = 64;
-const DISPLAY_HEIGHT: usize = 32;
-const DISPLAY_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT;
 
 enum Opcodes {
     ClearOrReturn(u16),            //sub code
@@ -46,7 +45,7 @@ pub struct ChipEight {
     sp: usize,        //The stack pointer
 
     key: [u8; 16],
-    display: [u8; DISPLAY_SIZE], //Chip8 has a display that is 64 x 32
+    pub display: [u8; crate::DISPLAY_SIZE], //Chip8 has a display that is 64 x 32
 }
 
 #[derive(FromPrimitive)]
@@ -68,7 +67,7 @@ impl ChipEight {
             stack: [0; 16],
             sp: 0,
             key: [0; 16],
-            display: [0; DISPLAY_SIZE],
+            display: [0; crate::DISPLAY_SIZE],
         };
 
         const FONT_SIZE: usize = 80;
@@ -232,7 +231,7 @@ impl ChipEight {
                 self.v_register[vx] = self.v_register[vy];
             }
             Opcodes::AddByte(vx, k) => {
-                self.v_register[vx] += k;
+                self.v_register[vx] = self.v_register[vx].wrapping_add(k);
             }
             Opcodes::Arithmetic(sub, vx, vy) => {
                 match sub {
@@ -305,7 +304,9 @@ impl ChipEight {
                 self.pc = addr + self.v_register[0] as usize;
             }
             Opcodes::RandomVxByte(vx, k) => {
-                self.v_register[vx] = rand::random::<u8>() + k;
+                self.v_register[vx] = k.wrapping_add(rand::random::<u8>()); //Ok, so if you have an overflow when doing arithmetic rust will panic
+                                                                            //.wrapping_add will let you do arithmetic and wrap the numbers around
+                                                                            //for an overflow.
             }
             Opcodes::Draw(vx, vy, height) => {
                 self.v_register[0xF] = 0;
@@ -315,12 +316,14 @@ impl ChipEight {
 
                     for x in 0..8 {
                         if (pixel & (0x80 >> x)) != 0 {
-                            let current_position = (vx + x) + ((vy + y) * 64); //Treats display as though it were a 2d array
+                            let current_position = ((vx + x) + ((vy + y) * 64)) as usize; //Treats display as though it were a 2d array
 
-                            if self.display[current_position as usize] == 1 {
-                                self.v_register[0xF] = 1;
+                            if current_position < crate::DISPLAY_SIZE {
+                                if self.display[current_position] == 1 {
+                                    self.v_register[0xF] = 1;
+                                }
+                                self.display[current_position as usize] ^= 1;
                             }
-                            self.display[current_position as usize] ^= 1;
                         }
                     }
                 }
@@ -436,5 +439,12 @@ impl ChipEight {
         }
     }
 
-    pub fn load_rom(&mut self) {}
+    pub fn load_rom(&mut self, file_path: &str) {
+        let mut rom = File::open(file_path).expect("Rom was not found");
+        let mut buffer = [0; 3584];
+        let buffer_size = rom.read(&mut buffer[..]).expect("Error when reading file");
+        for i in 0..buffer_size {
+            self.memory[i + 512] = buffer[i];
+        }
+    }
 }
