@@ -1,9 +1,7 @@
 use num_derive::FromPrimitive;
 
-use std::convert::AsRef;
 use std::fs::File;
 use std::io::Read;
-use strum_macros::AsRefStr;
 
 //use rand::prelude::*;
 
@@ -15,7 +13,6 @@ const ADDR_MASK: u16 = 0x0FFF;
 const BYTE_MASK: u16 = 0x00FF;
 const NIBBLE_MASK: u16 = 0x000F;
 
-#[derive(AsRefStr, Debug)]
 enum Opcodes {
     ClearOrReturn(u16),            //sub code
     Jump(usize),                   //address
@@ -54,7 +51,7 @@ pub struct ChipEight {
     stack: [u16; 16], //The stack
     sp: usize,        //The stack pointer
 
-    key: [u8; 16],
+    pub key: [bool; 16],
     pub display: [u8; crate::DISPLAY_SIZE], //Chip8 has a display that is 64 x 32
 }
 
@@ -76,7 +73,7 @@ impl ChipEight {
             sound_timer: 0,
             stack: [0; 16],
             sp: 0,
-            key: [0; 16],
+            key: [false; 16],
             display: [0; crate::DISPLAY_SIZE],
         };
 
@@ -194,22 +191,18 @@ impl ChipEight {
         let opcode = self.fetch();
         self.pc += 2; //increment the pc for the next instruction
 
-        println!("Opcode: {}", opcode.as_ref());
-
         //Decode opcode
         match opcode {
             Opcodes::ClearOrReturn(sub) => {
                 match sub {
                     //Clear Display
                     0x0000 => {
-                        println!("----- Clear Display");
                         for i in 0..crate::DISPLAY_SIZE {
                             self.display[i] = 0;
                         }
                     }
                     //00EE: Return from subroutine
                     0x000E => {
-                        println!("----- Return");
                         self.sp -= 1;
                         self.pc = self.stack[self.sp] as usize; //pop program counter off of the stack
                     }
@@ -311,34 +304,38 @@ impl ChipEight {
                     self.pc += 2;
                 }
             }
+            //Sets I to the address NNN.
             Opcodes::LoadI(addr) => {
                 self.i_register = addr;
             }
+            //Jumps to the address NNN plus V0.
             Opcodes::JumpOffset(addr) => {
                 self.pc = addr + self.v_register[0] as usize;
             }
+            //Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
             Opcodes::RandomVxByte(vx, k) => {
                 self.v_register[vx] = rand::random::<u8>() & k;
             }
+            //Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N+1 pixels.
+            //Each row of 8 pixels is read as bit-coded starting from memory location I; I value doesn’t change after the execution of this instruction.
+            //As described above, VF is set to 1 if any screen pixels are flipped from set to unset when the sprite is drawn, and to 0 if that doesn’t happen
             Opcodes::Draw(vx, vy, height) => {
                 self.v_register[0xF] = 0;
-
-                let x_pos = (vx as usize % crate::DISPLAY_WIDTH) as u16;
-                let y_pos = (vy as usize % crate::DISPLAY_HEIGHT) as u16;
 
                 for y in 0..height {
                     let pixel = self.memory[(self.i_register + y as usize) as usize]; //get the pixel value from the sprite stored in memory
 
                     for x in 0..8 {
                         if (pixel & (0x80 >> x)) != 0 {
-                            let current_position = ((x_pos + x)
-                                + ((y_pos + y) * crate::DISPLAY_WIDTH as u16))
-                                as usize; //Treats display as though it were a 2d array
+                            let current_position =
+                                ((vx + x) + ((vy + y) * crate::DISPLAY_WIDTH as u16)) as usize; //Treats display as though it were a 2d array
 
-                            if self.display[current_position] == 1 {
-                                self.v_register[0xF] = 1;
+                            if current_position < crate::DISPLAY_SIZE {
+                                if self.display[current_position] == 1 {
+                                    self.v_register[0xF] = 1; //Collision detected
+                                }
+                                self.display[current_position as usize] ^= 1;
                             }
-                            self.display[current_position as usize] ^= 1;
                         }
                     }
                 }
@@ -346,13 +343,13 @@ impl ChipEight {
             Opcodes::SkipPressed(vx, sub) => match sub {
                 //Skips the next instruction if the key in Vx is not pressed
                 0x1 => {
-                    if self.key[self.v_register[vx] as usize] == 0 {
+                    if !self.key[self.v_register[vx] as usize] {
                         self.pc += 2;
                     }
                 }
                 //Skips the next instruction if the key in Vx is pressed
                 0xE => {
-                    if self.key[self.v_register[vx] as usize] > 0 {
+                    if self.key[self.v_register[vx] as usize] {
                         self.pc += 2;
                     }
                 }
@@ -370,40 +367,17 @@ impl ChipEight {
                     }
                     //wait for key press and save it in Vx
                     0x000A => {
-                        if self.key[0] > 0 {
-                            self.v_register[vx] = 0;
-                        } else if self.key[1] > 0 {
-                            self.v_register[vx] = 1;
-                        } else if self.key[2] > 0 {
-                            self.v_register[vx] = 2;
-                        } else if self.key[3] > 0 {
-                            self.v_register[vx] = 3;
-                        } else if self.key[4] > 0 {
-                            self.v_register[vx] = 4;
-                        } else if self.key[5] > 0 {
-                            self.v_register[vx] = 5;
-                        } else if self.key[6] > 0 {
-                            self.v_register[vx] = 6;
-                        } else if self.key[7] > 0 {
-                            self.v_register[vx] = 7;
-                        } else if self.key[8] > 0 {
-                            self.v_register[vx] = 8;
-                        } else if self.key[9] > 0 {
-                            self.v_register[vx] = 9;
-                        } else if self.key[10] > 0 {
-                            self.v_register[vx] = 10;
-                        } else if self.key[11] > 0 {
-                            self.v_register[vx] = 11;
-                        } else if self.key[12] > 0 {
-                            self.v_register[vx] = 12;
-                        } else if self.key[13] > 0 {
-                            self.v_register[vx] = 13;
-                        } else if self.key[14] > 0 {
-                            self.v_register[vx] = 14;
-                        } else if self.key[15] > 0 {
-                            self.v_register[vx] = 15;
-                        } else {
-                            //So a pretty easy to wait to just to repeat the same instruction
+                        let mut key_found = false;
+                        //loop through the whole key array
+                        for x in 0x0..0xF + 1 {
+                            if self.key[x] {
+                                self.v_register[vx] = x as u8;
+                                key_found = true;
+                            }
+                        }
+
+                        if !key_found {
+                            //So a pretty easy way to wait is to just repeat the same instruction
                             self.pc -= 2;
                         }
                     }
